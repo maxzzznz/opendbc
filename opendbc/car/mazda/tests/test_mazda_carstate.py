@@ -136,3 +136,107 @@ class TestTrafficSigns:
   def test_imperial_keeps_existing_cluster_flag_and_mph_conversion(self, monkeypatch):
     assert self._speed_limit(monkeypatch, CAR.MAZDA_CX9_2021, False, 0, 1, 50) == 0.0
     assert self._speed_limit(monkeypatch, CAR.MAZDA_CX9_2021, False, 1, 0, 50) == pytest.approx(50 * CV.MPH_TO_MS)
+
+
+class TestTwoMasterGuard:
+  """The stock-radar guard wears two hats: before the first teardown it is the expected boot
+  phase and must only hold availability low (no fault alert); once the radar has been silenced,
+  hearing it again is a genuine two-master conflict and must raise accFaulted."""
+
+  def _feed_guard(self, CI, seconds, radar_alive, start_frame=0):
+    from opendbc.can import CANPacker
+    from opendbc.car.mazda import mazdacan
+    packer = CANPacker("mazda_2017")
+    ret = None
+    frames = int(seconds / DT_CTRL)
+    for i in range(start_frame, start_frame + frames):
+      msgs = [packer.make_can_msg("PEDALS", 0, {"ACC_OFF": 1})]
+      if radar_alive:
+        msgs.append(mazdacan.create_acc_command(packer, 0, i, 0., False, True,
+                                                stopping=False, resume_unlatching=False))
+      ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
+    return ret, start_frame + frames
+
+  def test_boot_phase_is_not_a_fault(self):
+    # radar broadcasting, teardown not started: engagement blocked quietly, no Cruise Fault
+    CI = _interface()
+    ret, _ = self._feed_guard(CI, 5.0, radar_alive=True)
+    assert not ret.accFaulted
+    assert not ret.cruiseState.available
+
+  def test_availability_arrives_with_radar_silence(self):
+    CI = _interface()
+    ret, n = self._feed_guard(CI, 5.0, radar_alive=True)
+    ret, n = self._feed_guard(CI, CarControllerParams.STOCK_RADAR_GUARD_T + 0.5,
+                              radar_alive=False, start_frame=n)
+    assert not ret.accFaulted
+    assert ret.cruiseState.available
+
+  def test_radar_return_after_teardown_is_a_fault(self):
+    CI = _interface()
+    ret, n = self._feed_guard(CI, 5.0, radar_alive=True)
+    ret, n = self._feed_guard(CI, CarControllerParams.STOCK_RADAR_GUARD_T + 0.5,
+                              radar_alive=False, start_frame=n)
+    ret, n = self._feed_guard(CI, 0.5, radar_alive=True, start_frame=n)
+    assert ret.accFaulted
+    # availability keys on the latched "was silenced", so a transient return does not
+    # yank lateral out from under MADS on top of the fault
+    assert ret.cruiseState.available
+    # silence restores the clean state
+    ret, n = self._feed_guard(CI, CarControllerParams.STOCK_RADAR_GUARD_T + 0.5,
+                              radar_alive=False, start_frame=n)
+    assert not ret.accFaulted
+    assert ret.cruiseState.available
+
+
+class TestCancelUnderBraking:
+  """The availability brake-hold exists for brake-only PEDALS samples that arrive with both
+  bits low mid-press. A wheel CANCEL turns the MRCC main state off for real and must land
+  even with the brake down (route 7f9e3ff336 t+484-488: cancel mashed under braking was
+  swallowed until the brake released 4 s later)."""
+
+  def _armed_and_silent(self, CI):
+    # get past the two-master guard with the main armed so availability starts True
+    from opendbc.can import CANPacker
+    packer = CANPacker("mazda_2017")
+    guard = CarControllerParams.STOCK_RADAR_GUARD_T + 0.5
+    for i in range(int(guard / DT_CTRL)):
+      msgs = [packer.make_can_msg("PEDALS", 0, {"ACC_OFF": 1})]
+      ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
+    assert ret.cruiseState.available
+    return packer, int(guard / DT_CTRL)
+
+  def _feed(self, CI, packer, n0, seconds, brake, cancel):
+    ret = None
+    frames = int(seconds / DT_CTRL)
+    for i in range(n0, n0 + frames):
+      msgs = [packer.make_can_msg("PEDALS", 0, {"ACC_OFF": 0, "BRAKE_ON": int(brake)}),
+              packer.make_can_msg("CRZ_BTNS", 0, {"CAN_OFF": int(cancel)})]
+      ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
+    return ret, n0 + frames
+
+  def test_brake_only_dropout_is_held(self):
+    CI = _interface()
+    packer, n = self._armed_and_silent(CI)
+    ret, n = self._feed(CI, packer, n, 1.0, brake=True, cancel=False)
+    assert ret.cruiseState.available
+
+  def test_cancel_lands_through_the_brake(self):
+    CI = _interface()
+    packer, n = self._armed_and_silent(CI)
+    ret, n = self._feed(CI, packer, n, 0.3, brake=True, cancel=True)
+    assert not ret.cruiseState.available
+
+  def test_cancel_context_outlives_the_press(self):
+    # the PEDALS reaction can trail the button: press-and-release while still armed, then the
+    # bits drop only after the button is back up -- the context memory has to carry it
+    CI = _interface()
+    packer, n = self._armed_and_silent(CI)
+    ret = None
+    for i in range(n, n + 5):  # cancel pressed, PEDALS not yet reacting
+      msgs = [packer.make_can_msg("PEDALS", 0, {"ACC_OFF": 1}),
+              packer.make_can_msg("CRZ_BTNS", 0, {"CAN_OFF": 1})]
+      ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(m[0], m[1], m[2]) for m in msgs])])
+    assert ret.cruiseState.available
+    ret, n = self._feed(CI, packer, n + 5, 0.2, brake=True, cancel=False)
+    assert not ret.cruiseState.available
