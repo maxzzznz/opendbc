@@ -1,8 +1,11 @@
 import pytest
+from types import SimpleNamespace
 
-from opendbc.car import DT_CTRL, gen_empty_fingerprint
+from opendbc.car import Bus, DT_CTRL, gen_empty_fingerprint, structs
+from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
+from opendbc.sunnypilot.car.mazda import carstate_ext
 
 CAM_LANEINFO = 0x440
 
@@ -98,3 +101,38 @@ class TestBrakeHold:
   def test_defaults_to_not_held(self):
     # nothing parsed yet must read as "the car is not holding", the direction that keeps braking
     assert not _interface().CS.brake_hold
+
+
+class TestTrafficSigns:
+  @staticmethod
+  def _speed_limit(monkeypatch, car_fingerprint, is_metric, speed_sign_on, speed_sign_cam, speed_sign):
+    class FakeParams:
+      def get_bool(self, key):
+        assert key == "IsMetric"
+        return is_metric
+
+    monkeypatch.setattr(carstate_ext, "Params", FakeParams)
+    extension = carstate_ext.CarStateExt(SimpleNamespace(carFingerprint=car_fingerprint), None)
+    ret_sp = structs.CarStateSP()
+    can_parsers = {
+      Bus.cam: SimpleNamespace(vl={"CAM_TRAFFIC_SIGNS": {
+        "SPEED_SIGN": speed_sign,
+        "SPEED_SIGN_ON": speed_sign_on,
+        "SPEED_SIGN_CAM": speed_sign_cam,
+      }}),
+    }
+    extension.update(structs.CarState(), ret_sp, can_parsers)
+    return ret_sp.speedLimit
+
+  def test_metric_cx9_accepts_either_validity_flag(self, monkeypatch):
+    # NZ CX-9 route: the cluster flag is clear even while the front camera recognizes a sign.
+    assert self._speed_limit(monkeypatch, CAR.MAZDA_CX9_2021, True, 0, 1, 50) == pytest.approx(50 * CV.KPH_TO_MS)
+    assert self._speed_limit(monkeypatch, CAR.MAZDA_CX9_2021, True, 1, 0, 50) == pytest.approx(50 * CV.KPH_TO_MS)
+
+  def test_metric_non_cx9_keeps_cluster_validity_flag(self, monkeypatch):
+    assert self._speed_limit(monkeypatch, CAR.MAZDA_CX5_2022, True, 0, 1, 50) == 0.0
+    assert self._speed_limit(monkeypatch, CAR.MAZDA_CX5_2022, True, 1, 0, 50) == pytest.approx(50 * CV.KPH_TO_MS)
+
+  def test_imperial_keeps_existing_cluster_flag_and_mph_conversion(self, monkeypatch):
+    assert self._speed_limit(monkeypatch, CAR.MAZDA_CX9_2021, False, 0, 1, 50) == 0.0
+    assert self._speed_limit(monkeypatch, CAR.MAZDA_CX9_2021, False, 1, 0, 50) == pytest.approx(50 * CV.MPH_TO_MS)
