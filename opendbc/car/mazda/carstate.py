@@ -2,7 +2,7 @@ from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.mazda.values import DBC, LKAS_LIMITS, CarControllerParams
+from opendbc.car.mazda.values import CAR, DBC, LKAS_LIMITS, CarControllerParams
 from opendbc.sunnypilot.car.mazda.carstate_ext import CarStateExt
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -181,7 +181,14 @@ class CarState(CarStateBase, CarStateExt):
       ret.cruiseState.enabled = cp.vl["CRZ_CTRL"]["CRZ_ACTIVE"] == 1
     self.brake_pressed_prev = ret.brakePressed
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1
-    ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
+    cruise_speed_kph = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"]
+    if self.CP.carFingerprint == CAR.MAZDA_CX9_2021 and cruise_speed_kph > 0:
+      # The shared DBC decodes CRZ_SPEED as raw / 200 - 0.5, which matches other
+      # Mazdas. CX-9 2021-23 uses (raw + 96) / 196 instead. Re-expressing the
+      # CX-9 formula in terms of the shared DBC value keeps the correction scoped
+      # to this platform without changing the decode for CX-5 and other Mazdas.
+      cruise_speed_kph = cruise_speed_kph * 50 / 49 + 1
+    ret.cruiseState.speed = cruise_speed_kph * CV.KPH_TO_MS
 
     # stock lkas should be on
     # TODO: is this needed?

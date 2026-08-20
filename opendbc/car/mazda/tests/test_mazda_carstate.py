@@ -15,11 +15,11 @@ BIT2_LATCHED = bytes([0x41, 0b00100001, 0, 0, 0, 0, 0, 0])  # BIT2 stuck high fo
 FAULTED = bytes([0x42, 0b00000001, 0, 0, 0, 0x01, 0, 0])    # ERR_BIT (bit 40) set
 
 
-def _interface(alpha_long=True):
+def _interface(alpha_long=True, candidate=CAR.MAZDA_CX5_2022):
   fingerprint = gen_empty_fingerprint()
-  CP = CarInterface.get_params(CAR.MAZDA_CX5_2022, fingerprint, [], alpha_long=alpha_long,
+  CP = CarInterface.get_params(candidate, fingerprint, [], alpha_long=alpha_long,
                                is_release=False, docs=False)
-  CP_SP = CarInterface.get_params_sp(CP, CAR.MAZDA_CX5_2022, fingerprint, [],
+  CP_SP = CarInterface.get_params_sp(CP, candidate, fingerprint, [],
                                      alpha_long=alpha_long, is_release_sp=False, docs=False)
   return CarInterface(CP, CP_SP)
 
@@ -191,6 +191,37 @@ class TestSpeedSignLimit:
     for i in range(2):
       _, ret_sp = CI.update([(int(i * DT_CTRL * 1e9), [(msg[0], msg[1], msg[2])])])
     assert ret_sp.speedLimit == 0.0
+
+
+class TestCruiseSetSpeed:
+  @staticmethod
+  def _decode(candidate, raw):
+    CI = _interface(alpha_long=False, candidate=candidate)
+    payload = raw.to_bytes(2, "big") + bytes(6)
+    ret = None
+    for i in range(2):
+      ret, _ = CI.update([(int(i * DT_CTRL * 1e9), [(0x21F, payload, 0)])])
+    return ret.cruiseState.speed / CV.KPH_TO_MS
+
+  @pytest.mark.parametrize(("raw", "cluster_kph"), [
+    (6176, 32),
+    (7352, 38),
+    (10098, 52),
+    (19504, 100),
+  ])
+  def test_cx9_2021_uses_cluster_scale(self, raw, cluster_kph):
+    # 6176, 7352 and 10098 are real CRZ_EVENTS samples from the reporter's
+    # CX-9 route. A two-count quantization difference is only 0.01 km/h and
+    # still rounds to the integer shown by the cluster.
+    decoded_kph = self._decode(CAR.MAZDA_CX9_2021, raw)
+    assert decoded_kph == pytest.approx((raw + 96) / 196)
+    assert round(decoded_kph) == cluster_kph
+
+  @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9])
+  def test_shared_dbc_decode_is_unchanged_for_other_platforms(self, candidate):
+    raw = 19504
+    dbc_kph = raw * 0.005 - 0.5
+    assert self._decode(candidate, raw) == pytest.approx(dbc_kph)
 
 
 class TestCancelUnderBraking:
