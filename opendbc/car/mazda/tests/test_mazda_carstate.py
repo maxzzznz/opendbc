@@ -1,6 +1,6 @@
 import pytest
 
-from opendbc.car import DT_CTRL, gen_empty_fingerprint
+from opendbc.car import DT_CTRL, gen_empty_fingerprint, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda.interface import CarInterface
 from opendbc.car.mazda.values import CAR, CarControllerParams
@@ -15,11 +15,24 @@ BIT2_LATCHED = bytes([0x41, 0b00100001, 0, 0, 0, 0, 0, 0])  # BIT2 stuck high fo
 FAULTED = bytes([0x42, 0b00000001, 0, 0, 0, 0x01, 0, 0])    # ERR_BIT (bit 40) set
 
 
-def _interface(alpha_long=True, candidate=CAR.MAZDA_CX5_2022):
+Ecu = structs.CarParams.Ecu
+
+
+def _engine_fw(version):
+  fw = structs.CarParams.CarFw()
+  fw.ecu = Ecu.engine
+  fw.address = 0x7e0
+  fw.subAddress = 0
+  fw.fwVersion = version
+  return [fw]
+
+
+def _interface(alpha_long=True, candidate=CAR.MAZDA_CX5_2022, car_fw=None):
   fingerprint = gen_empty_fingerprint()
-  CP = CarInterface.get_params(candidate, fingerprint, [], alpha_long=alpha_long,
+  car_fw = car_fw or []
+  CP = CarInterface.get_params(candidate, fingerprint, car_fw, alpha_long=alpha_long,
                                is_release=False, docs=False)
-  CP_SP = CarInterface.get_params_sp(CP, candidate, fingerprint, [],
+  CP_SP = CarInterface.get_params_sp(CP, candidate, fingerprint, car_fw,
                                      alpha_long=alpha_long, is_release_sp=False, docs=False)
   return CarInterface(CP, CP_SP)
 
@@ -195,9 +208,9 @@ class TestSpeedSignLimit:
 
 class TestCruiseSetSpeed:
   @staticmethod
-  def _decode(candidate, raw, is_metric=False):
-    CI = _interface(alpha_long=False, candidate=candidate)
-    CI.CS.use_metric_cruise_speed = is_metric
+  def _decode(candidate, raw, engine_fw=None):
+    car_fw = _engine_fw(engine_fw) if engine_fw is not None else []
+    CI = _interface(alpha_long=False, candidate=candidate, car_fw=car_fw)
     payload = raw.to_bytes(2, "big") + bytes(6)
     ret = None
     for i in range(2):
@@ -210,18 +223,19 @@ class TestCruiseSetSpeed:
     (10098, 52),
     (19504, 100),
   ])
-  def test_cx9_2021_uses_cluster_scale(self, raw, cluster_kph):
+  @pytest.mark.parametrize("engine_fw", [b'PXM7-188K2-D', b'PXM7-188K2-E', b'PXM7-188K2-F'])
+  def test_pxm7_cx9_uses_cluster_scale(self, raw, cluster_kph, engine_fw):
     # 6176, 7352 and 10098 are real CRZ_EVENTS samples from the reporter's
     # CX-9 route. A two-count quantization difference is only 0.01 km/h and
     # still rounds to the integer shown by the cluster.
-    decoded_kph = self._decode(CAR.MAZDA_CX9_2021, raw, is_metric=True)
+    decoded_kph = self._decode(CAR.MAZDA_CX9_2021, raw, engine_fw=engine_fw)
     assert decoded_kph == pytest.approx((raw + 96) / 196)
     assert round(decoded_kph) == cluster_kph
 
-  def test_cx9_2021_imperial_uses_shared_dbc_scale(self):
+  def test_us_pxm4_cx9_uses_shared_dbc_scale(self):
     raw = 19504
     dbc_kph = raw * 0.005 - 0.5
-    assert self._decode(CAR.MAZDA_CX9_2021, raw, is_metric=False) == pytest.approx(dbc_kph)
+    assert self._decode(CAR.MAZDA_CX9_2021, raw, engine_fw=b'PXM4-188K2-D') == pytest.approx(dbc_kph)
 
   @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9])
   def test_shared_dbc_decode_is_unchanged_for_other_platforms(self, candidate):
