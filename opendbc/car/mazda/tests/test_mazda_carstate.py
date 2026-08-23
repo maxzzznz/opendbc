@@ -195,8 +195,9 @@ class TestSpeedSignLimit:
 
 class TestCruiseSetSpeed:
   @staticmethod
-  def _decode(candidate, raw):
+  def _decode(candidate, raw, is_metric=False):
     CI = _interface(alpha_long=False, candidate=candidate)
+    CI.CS.use_metric_cruise_speed = is_metric
     payload = raw.to_bytes(2, "big") + bytes(6)
     ret = None
     for i in range(2):
@@ -213,9 +214,14 @@ class TestCruiseSetSpeed:
     # 6176, 7352 and 10098 are real CRZ_EVENTS samples from the reporter's
     # CX-9 route. A two-count quantization difference is only 0.01 km/h and
     # still rounds to the integer shown by the cluster.
-    decoded_kph = self._decode(CAR.MAZDA_CX9_2021, raw)
+    decoded_kph = self._decode(CAR.MAZDA_CX9_2021, raw, is_metric=True)
     assert decoded_kph == pytest.approx((raw + 96) / 196)
     assert round(decoded_kph) == cluster_kph
+
+  def test_cx9_2021_imperial_uses_shared_dbc_scale(self):
+    raw = 19504
+    dbc_kph = raw * 0.005 - 0.5
+    assert self._decode(CAR.MAZDA_CX9_2021, raw, is_metric=False) == pytest.approx(dbc_kph)
 
   @pytest.mark.parametrize("candidate", [CAR.MAZDA_CX5_2022, CAR.MAZDA_CX9])
   def test_shared_dbc_decode_is_unchanged_for_other_platforms(self, candidate):
