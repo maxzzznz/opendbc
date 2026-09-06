@@ -2,7 +2,7 @@ from opendbc.can import CANDefine, CANParser
 from opendbc.car import Bus, DT_CTRL, create_button_events, structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.interfaces import CarStateBase
-from opendbc.car.mazda.values import DBC, LKAS_LIMITS, CarControllerParams, MazdaFlags
+from opendbc.car.mazda.values import DBC, LKAS_LIMITS, CarControllerParams
 from opendbc.sunnypilot.car.mazda.carstate_ext import CarStateExt
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -182,11 +182,11 @@ class CarState(CarStateBase, CarStateExt):
     self.brake_pressed_prev = ret.brakePressed
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1
     cruise_speed_kph = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"]
-    if self.CP.flags & MazdaFlags.PXM7_CRUISE_SPEED and cruise_speed_kph > 0:
+    if self.CP.carVin.startswith("JM0") and cruise_speed_kph > 0:
       # The shared DBC decodes CRZ_SPEED as raw / 200 - 0.5, which matches other
-      # Mazdas. CX-9 2021-23 uses (raw + 96) / 196 instead. Re-expressing the
-      # CX-9 formula in terms of the shared DBC value keeps the correction scoped
-      # to this platform without changing the decode for CX-5 and other Mazdas.
+      # Mazdas. Use the scale observed on the reporter's JM0 Oceania CX-9 for
+      # JM0-market Mazdas: (raw + 96) / 196. Re-expressing it in terms of the
+      # shared DBC value avoids changing the signal for every Mazda.
       cruise_speed_kph = cruise_speed_kph * 50 / 49 + 1
     ret.cruiseState.speed = cruise_speed_kph * CV.KPH_TO_MS
 

@@ -4,7 +4,7 @@ from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.fw_versions import match_fw_to_car
 from opendbc.car.mazda.interface import CarInterface
-from opendbc.car.mazda.values import CAR, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW, MazdaFlags
+from opendbc.car.mazda.values import CAR, LKAS_LIMITS, STEER_TO_ZERO_EPS_FW
 
 Ecu = structs.CarParams.Ecu
 
@@ -67,11 +67,6 @@ class TestMazdaEpsSwap:
     assert CP.minSteerSpeed == 0
     assert CP.steerActuatorDelay == pytest.approx(0.14)
 
-  def test_us_cx9_pcm_keeps_shared_cruise_speed_scale(self):
-    us_fw = [_fw(Ecu.engine, 0x7e0, b'PXM4-188K2-D' + b'\x00' * 12)]
-    CP = _params(CAR.MAZDA_CX9_2021, us_fw)
-    assert not CP.flags & MazdaFlags.PXM7_CRUISE_SPEED
-
   def test_hybrid_cx9_is_identified_with_the_swapped_eps(self):
     exact, candidates = match_fw_to_car(HYBRID_CX9_FW, "", allow_fuzzy=False, log=False)
     assert exact
@@ -81,7 +76,6 @@ class TestMazdaEpsSwap:
     assert not CP.dashcamOnly
     assert CP.minSteerSpeed == 0
     assert CP.steerActuatorDelay == pytest.approx(0.14)
-    assert CP.flags & MazdaFlags.PXM7_CRUISE_SPEED
 
   def test_swapped_eps_does_not_unlock_longitudinal(self):
     # the radar and camera are not part of an EPS swap, and this car keeps its own pre-2022 pair
