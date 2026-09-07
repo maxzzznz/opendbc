@@ -247,7 +247,14 @@ class CarState(CarStateBase, CarStateExt):
     # PEDALS.STANDSTILL means wheels stopped, not ACC hold. Reporting it under openpilot
     # longitudinal would prevent LongControl from leaving its stopping state.
     ret.cruiseState.standstill = cp.vl["PEDALS"]["STANDSTILL"] == 1 and not self.CP.openpilotLongitudinalControl
-    ret.cruiseState.speed = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"] * CV.KPH_TO_MS
+    cruise_speed_kph = cp.vl["CRZ_EVENTS"]["CRZ_SPEED"]
+    if self.CP.carVin.startswith("JM0") and cruise_speed_kph > 0:
+      # The shared DBC decodes CRZ_SPEED as raw / 200 - 0.5, which matches other
+      # Mazdas. Use the scale observed on the reporter's JM0 Oceania CX-9 for
+      # JM0-market Mazdas: (raw + 96) / 196. Re-expressing it in terms of the
+      # shared DBC value avoids changing the signal for every Mazda.
+      cruise_speed_kph = cruise_speed_kph * 50 / 49 + 1
+    ret.cruiseState.speed = cruise_speed_kph * CV.KPH_TO_MS
 
     # Stock LKAS must be active.
     # TODO: is this needed?

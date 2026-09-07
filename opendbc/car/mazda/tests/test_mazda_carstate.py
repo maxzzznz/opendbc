@@ -15,7 +15,7 @@ from opendbc.car import structs
 from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.mazda import mazdacan
 from opendbc.car.mazda.tests.conftest import car_interface, packer
-from opendbc.car.mazda.values import CarControllerParams
+from opendbc.car.mazda.values import CAR, CarControllerParams
 from opendbc.sunnypilot.car.mazda.values import MazdaFlagsSP
 
 CAM_LANEINFO = 0x440
@@ -310,6 +310,34 @@ class TestSpeedSignLimit:
     for i in range(2):
       _, ret_sp = feed(CI, i, msg)
     assert ret_sp.speedLimit == 0.0
+
+
+class TestCruiseSetSpeed:
+  @staticmethod
+  def decode(raw, vin):
+    CI = car_interface(alpha_long=False, candidate=CAR.MAZDA_CX9_2021)
+    CI.CP.carVin = vin
+    payload = raw.to_bytes(2, "big") + bytes(6)
+    ret = None
+    for i in range(2):
+      ret, _ = feed(CI, i, (0x21F, payload, 0))
+    return ret.cruiseState.speed / CV.KPH_TO_MS
+
+  @pytest.mark.parametrize("raw, cluster_kph", [
+    (6176, 32),
+    (7352, 38),
+    (10098, 52),
+    (19504, 100),
+  ])
+  def test_jm0_uses_observed_oceania_scale(self, raw, cluster_kph):
+    decoded_kph = self.decode(raw, "JM0TC4WLA00554377")
+    assert decoded_kph == pytest.approx((raw + 96) / 196)
+    assert round(decoded_kph) == cluster_kph
+
+  @pytest.mark.parametrize("vin", ["JM3TCBCY0N0600001", "00000000000000000"])
+  def test_other_vins_keep_shared_dbc_scale(self, vin):
+    raw = 10098
+    assert self.decode(raw, vin) == pytest.approx(raw / 200 - 0.5)
 
 
 class TestCancelUnderBraking:
